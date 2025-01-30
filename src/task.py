@@ -5,31 +5,49 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
+# from flwr_datasets import FederatedDataset
+# from flwr_datasets.partitioner import IidPartitioner
 from torch.utils.data import DataLoader
-from torchvision.transforms import Compose, Normalize, ToTensor
+#from torchvision.transforms import Compose, Normalize, ToTensor
+import torch.optim as optim
+import pandas as pd
+import os
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import Normalizer
 
+INPUT_DIM = 39
+BOTTLENECK_DIM = 4
 
 class Net(nn.Module):
-    """Model (simple CNN adapted from 'PyTorch: A 60 Minute Blitz')"""
-
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
+        self.encoder = nn.Sequential(
+            nn.Linear(INPUT_DIM, 16),
+            nn.ELU(True),
+
+            nn.Linear(16, 8),
+            nn.ELU(True),
+
+            nn.Linear(8, BOTTLENECK_DIM),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(BOTTLENECK_DIM, 8),
+            nn.ELU(True),
+
+            nn.Linear(8, 16),
+            nn.ELU(True),
+
+            nn.Linear(16, INPUT_DIM),
+            nn.Sigmoid(),
+        )
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
+
 
 
 def get_weights(net):
@@ -42,58 +60,71 @@ def set_weights(net, parameters):
     net.load_state_dict(state_dict, strict=True)
 
 
-fds = None  # Cache FederatedDataset
-
-
 def load_data(partition_id: int, num_partitions: int, batch_size: int):
     """Load partition CIFAR10 data."""
     # Only initialize `FederatedDataset` once
-    global fds
-    if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
-        fds = FederatedDataset(
-            dataset="uoft-cs/cifar10",
-            partitioners={"train": partitioner},
-        )
-    partition = fds.load_partition(partition_id)
+
+    # configure our pipeline
+    pipeline = Pipeline([('normalizer', Normalizer()),
+                        ('scaler', MinMaxScaler())])
+    #file = sorted(os.listdir("data"))[partition_id - 1]
+    
+    processed = pd.read_csv("processed.csv")
+
+    partition_len = int(len(processed) / num_partitions)
+
+    partition = processed.iloc[partition_id * partition_len: (partition_id + 1) * partition_len]
+
+    clean = partition[partition[" Label"] == "BENIGN"]
+    fraud = partition[partition[" Label"] != "BENIGN"]
     # Divide data on each node: 80% train, 20% test
-    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-    pytorch_transforms = Compose(
-        [ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-    )
+    TRAINING_SAMPLE = int(0.85 * clean.shape[0])
+    clean = clean.sample(frac=1).reset_index(drop=True)
+    # training set: exlusively non-fraud transactions
+    X_train = clean.iloc[:TRAINING_SAMPLE].drop(' Label', axis=1)
+    # testing  set: the remaining non-fraud + all the fraud 
+    #X_test = clean.iloc[TRAINING_SAMPLE:]
+    #print(X_train.shape,X_test.shape)
 
-    def apply_transforms(batch):
-        """Apply transforms to the partition from FederatedDataset."""
-        batch["img"] = [pytorch_transforms(img) for img in batch["img"]]
-        return batch
+    #X_test = pd.concat([X_test, fraud])
+    X_train, X_validate = train_test_split(X_train, 
+                                       test_size=0.05, train_size=0.95,
+                                       random_state=1)
+    pipeline.fit(X_train);
+    X_train = pipeline.transform(X_train)
+    X_validate = pipeline.transform(X_validate)
 
-    partition_train_test = partition_train_test.with_transform(apply_transforms)
-    trainloader = DataLoader(
-        partition_train_test["train"], batch_size=batch_size, shuffle=True
-    )
-    testloader = DataLoader(partition_train_test["test"], batch_size=batch_size)
+    X_train = torch.tensor(X_train, dtype=torch.float32)
+    X_validate = torch.tensor(X_validate, dtype=torch.float32)
+
+    trainloader = DataLoader(X_train, batch_size=batch_size, shuffle=True, drop_last=True)
+    testloader = DataLoader(X_validate, batch_size=batch_size, drop_last=True)
+
     return trainloader, testloader
 
 
 def train(net, trainloader, valloader, epochs, learning_rate, device):
     """Train the model on the training set."""
     net.to(device)  # move model to GPU if available
-    criterion = torch.nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(net.parameters(), lr=learning_rate)
     net.train()
     for _ in range(epochs):
         for batch in trainloader:
-            images = batch["img"]
-            labels = batch["label"]
+            data = batch.to(device)
+            #print("******* training ******** ",data.shape)
             optimizer.zero_grad()
-            criterion(net(images.to(device)), labels.to(device)).backward()
+            output = net(data)
+            loss = criterion(output, data)
+            loss.backward()
+            #print("******* training loss ******** ",loss)
             optimizer.step()
 
-    val_loss, val_acc = test(net, valloader, device)
+
+    val_loss= test(net, valloader, device)
 
     results = {
         "val_loss": val_loss,
-        "val_accuracy": val_acc,
     }
     return results
 
@@ -101,15 +132,19 @@ def train(net, trainloader, valloader, epochs, learning_rate, device):
 def test(net, testloader, device):
     """Validate the model on the test set."""
     net.to(device)  # move model to GPU if available
-    criterion = torch.nn.CrossEntropyLoss()
-    correct, loss = 0, 0.0
+    criterion = nn.MSELoss()
+    total_loss = 0.0
     with torch.no_grad():
         for batch in testloader:
-            images = batch["img"].to(device)
-            labels = batch["label"].to(device)
-            outputs = net(images)
-            loss += criterion(outputs, labels).item()
-            correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
-    accuracy = correct / len(testloader.dataset)
-    loss = loss / len(testloader)
-    return loss, accuracy
+            inputs = batch.to(device)
+            #print("******** inputs ********* ",inputs.shape)
+
+            outputs = net(inputs)
+            loss = criterion(outputs, inputs)  # Calculate loss for this batch
+            total_loss += loss.item()  # Accumulate the total loss
+            #print("******** outputs ********* ",outputs.shape)
+            #print("******** loss ********* ",loss)
+    avg_loss = total_loss / len(testloader)  # Calculate average loss
+    print(f"Average MSE Loss: {avg_loss}")
+    return avg_loss
+
