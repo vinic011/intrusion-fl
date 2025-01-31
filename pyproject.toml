@@ -8,6 +8,10 @@ version = "1.0.0"
 description = "Federated Learning with PyTorch and Flower (Quickstart Example)"
 license = "Apache-2.0"
 dependencies = [
+    "numpy",
+    "scikit-learn",
+    "matplotlib",
+    "seaborn",
     "flwr[simulation]>=1.14.0",
     "flwr-datasets[vision]>=0.3.0",
     "torch==2.2.1",
@@ -25,11 +29,11 @@ serverapp = "src.server_app:app"
 clientapp = "src.client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 2
-fraction-evaluate = 0.5
-local-epochs = 1
+num-server-rounds = 40
+fraction-evaluate = 1.0
+local-epochs = 3
 learning-rate = 0.1
-batch-size = 32
+batch-size = 64
 
 [tool.flwr.federations]
 default = "local-simulation"

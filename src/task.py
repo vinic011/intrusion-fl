@@ -225,7 +225,7 @@ def test(net, testloader, device):
     print(f"Average MSE Loss: {avg_loss}")
     return avg_loss
 
-def eval(net, testloader, y_test, device, thresholds):
+def eval(net, testloader, y_test, device, thresholds, partition_id):
     """Validate the model on the test set."""
     net.eval()
     net.to(device)
@@ -243,19 +243,43 @@ def eval(net, testloader, y_test, device, thresholds):
             reconstruction_error = criterion(outputs, inputs).mean(dim=tuple(range(1, inputs.ndim)))  # Reduz nas dimensões exceto batch
             reconstructions.extend(reconstruction_error.cpu().numpy())
 
-    # Converte labels para 'BENIGN' ou 'FRAUD'
-    y_true = np.where(y_test == 'BENIGN', 'BENIGN', 'FRAUD')
+    
 
     # Gera um nome para o experimento baseado no timestamp
-    time = datetime.now().strftime("%Y%m%d-%H%M%S")
-    experiment_name = f"autoencoder_{time}"
+    plot_error(y_test, reconstructions, partition_id)
+    
 
-    # Testa diferentes thresholds
-    for th in thresholds:
-        y_pred = np.where(np.array(reconstructions) > 10**(-th), 'FRAUD', 'BENIGN')
-        plot_cm(y_pred, y_true, experiment_name, th)
+    # # Converte labels para 'BENIGN' ou 'FRAUD'
+    # y_true = np.where(y_test == 'BENIGN', 'BENIGN', 'FRAUD')
 
-    return np.mean(reconstructions)
+    # # Testa diferentes thresholds
+    # for th in thresholds:
+    #     y_pred = np.where(np.array(reconstructions) > 10**(-th), 'FRAUD', 'BENIGN')
+    #     plot_cm(y_pred, y_true, experiment_name, th)
+
+    return float(np.mean(np.array(reconstructions)))
+
+def plot_error(y_test, mse, partition_id):
+    experiment = os.environ.get("EXPERIMENT_NAME", "default")
+    os.makedirs("experiments", exist_ok=True)
+    os.makedirs("experiments/errors", exist_ok=True)
+    os.makedirs(f"experiments/errors/{experiment}", exist_ok=True)
+    path = f"experiments/errors/{experiment}/{partition_id}"
+    os.makedirs(path, exist_ok=True)
+    mse = pd.Series(mse)
+    import matplotlib.pyplot as plt
+    clean_error = mse[y_test=='BENIGN']
+    fraud_error = mse[y_test!='BENIGN']
+
+    fig, ax = plt.subplots(figsize=(6,6))
+
+    ax.hist(-np.log10(clean_error), bins=50, density=True, label="clean", alpha=0.5, color="green")
+    ax.hist(-np.log10(fraud_error), bins=50,   density=True,label="fraud", alpha=0.5, color="red")
+
+    plt.title("(Normalized) Distribution of the Reconstruction Loss")
+    plt.legend()
+    
+    #plt.savefig(f"{path}/error_{round_}.png", dpi=300, bbox_inches='tight', transparent=False)
 
 def plot_cm(y_pred, y_true, experiment_name, threshold):
     import matplotlib.pyplot as plt

@@ -32,7 +32,7 @@ class SaveModelStrategy(fl.server.strategy.FedAvg):
 
             # Save aggregated_ndarrays to disk
             print(f"Saving round {server_round} aggregated_ndarrays...")
-            np.savez(f"round-{server_round}-weights.npz", *aggregated_ndarrays)
+            #np.savez(f"round-{server_round}-weights.npz", *aggregated_ndarrays)
 
         return aggregated_parameters, aggregated_metrics
 
@@ -60,11 +60,17 @@ def server_fn(context: Context):
     parameters = ndarrays_to_parameters(ndarrays)
 
     # Define the strategy
-    strategy = SaveModelStrategy(
+    # strategy = SaveModelStrategy(
+    #     fraction_fit=1.0,
+    #     fraction_evaluate=context.run_config["fraction-evaluate"],
+    #     min_available_clients=2,
+    #     evaluate_metrics_aggregation_fn=weighted_average,
+    #     initial_parameters=parameters,
+    # )
+    strategy = FedAvg(
         fraction_fit=1.0,
-        fraction_evaluate=context.run_config["fraction-evaluate"],
+        fraction_evaluate=1.0,
         min_available_clients=2,
-        evaluate_metrics_aggregation_fn=weighted_average,
         initial_parameters=parameters,
     )
     config = ServerConfig(num_rounds=num_rounds)
