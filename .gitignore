@@ -2,3 +2,6 @@ data/*
 notebooks/*
 *.pyc
 *.npz
+experiments/*
+output.txt
+error.txt

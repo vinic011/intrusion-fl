@@ -4,15 +4,17 @@ import torch
 from flwr.client import ClientApp, NumPyClient
 from flwr.common import Context
 
-from src.task import Net, get_weights, load_data, set_weights, test, train
+from src.task import Net, get_weights, load_data, set_weights, test, train, eval
 
 
 # Define Flower Client
 class FlowerClient(NumPyClient):
-    def __init__(self, trainloader, valloader, local_epochs, learning_rate):
+    def __init__(self, trainloader, valloader, testloader, local_epochs, learning_rate, y_test):
         self.net = Net()
         self.trainloader = trainloader
         self.valloader = valloader
+        self.testloader = testloader
+        self.y_test = y_test
         self.local_epochs = local_epochs
         self.lr = learning_rate
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -33,7 +35,8 @@ class FlowerClient(NumPyClient):
     def evaluate(self, parameters, config):
         """Evaluate the model on the data this client has."""
         set_weights(self.net, parameters)
-        loss= test(self.net, self.valloader, self.device)
+        thresholds = [4.0, 4.2, 3.8]
+        loss = eval(self.net, self.testloader, self.y_test, self.device, thresholds)
         return loss, len(self.valloader.dataset), {"loss": loss}
 
 
@@ -46,12 +49,12 @@ def client_fn(context: Context):
 
     # Read run_config to fetch hyperparameters relevant to this run
     batch_size = context.run_config["batch-size"]
-    trainloader, valloader = load_data(partition_id, num_partitions, batch_size)
+    trainloader, valloader, testloader, y_test= load_data(partition_id, batch_size)
     local_epochs = context.run_config["local-epochs"]
     learning_rate = context.run_config["learning-rate"]
 
     # Return Client instance
-    return FlowerClient(trainloader, valloader, local_epochs, learning_rate).to_client()
+    return FlowerClient(trainloader, valloader, testloader, local_epochs, learning_rate, y_test).to_client()
 
 
 # Flower ClientApp
